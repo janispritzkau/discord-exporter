@@ -41,6 +41,10 @@ enum Command {
         /// Number of messages to fetch at once
         #[clap(long, default_value = "100")]
         fetch_limit: u32,
+
+        /// Fetch interval in milliseconds
+        #[clap(long, default_value = "1000")]
+        fetch_interval: u64,
     },
 }
 
@@ -97,6 +101,7 @@ async fn main() -> eyre::Result<()> {
             after,
             before,
             fetch_limit,
+            fetch_interval,
         } => {
             let after: u64 = after.map_or(0, Into::into);
             let before: u64 = before.map_or(
@@ -105,7 +110,7 @@ async fn main() -> eyre::Result<()> {
             );
 
             downloader
-                .download_messages(channel_id, after, before, fetch_limit)
+                .download_messages(channel_id, after, before, fetch_limit, fetch_interval)
                 .await?;
         }
     }
@@ -129,6 +134,7 @@ impl<'a> Downloader<'a> {
         after: u64,
         before: u64,
         fetch_limit: u32,
+        fetch_interval: u64,
     ) -> eyre::Result<()> {
         let tx = self.db_conn.transaction()?;
 
@@ -165,7 +171,7 @@ impl<'a> Downloader<'a> {
 
         tx.commit()?;
 
-        let (channel_name, guild_name): (String, Option<String>) = self.db_conn.query_row(
+        let (channel_name, guild_name): (Option<String>, Option<String>) = self.db_conn.query_row(
             "SELECT json_extract(c.data, '$.name'), json_extract(g.data, '$.name') FROM channels c LEFT JOIN guilds g ON g.id = c.guild_id WHERE c.id = ?",
             [channel_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -188,10 +194,12 @@ impl<'a> Downloader<'a> {
 
             let after = range.map_or(after, |(_, last_id)| last_id);
 
-            if let Some(guild_name) = &guild_name {
+            if let (Some(guild_name), Some(channel_name)) = (&guild_name, &channel_name) {
                 println!("fetching messages after {after} in #{channel_name} of {guild_name}");
-            } else {
+            } else if let Some(channel_name) = &channel_name {
                 println!("fetching messages after {after} in #{channel_name}");
+            } else {
+                println!("fetching messages after {after}");
             }
 
             let messages = self
@@ -251,7 +259,7 @@ impl<'a> Downloader<'a> {
                 break;
             }
 
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(fetch_interval)).await;
         }
 
         Ok(())
